@@ -1,93 +1,134 @@
-import { User } from "../entities/User";
-import { MyContext } from "src/types";
-import {
-  Resolver,
-  Mutation,
-  Arg,
-  InputType,
-  Field,
-  Ctx,
-  ObjectType,
-} from "type-graphql";
-import argon2 from "argon2";
+import { User } from '../entities/User'
+import { MyContext } from 'src/types'
+import { Resolver, Mutation, Arg, InputType, Field, Ctx, ObjectType, Query } from 'type-graphql'
+import argon2 from 'argon2'
 
 @InputType()
 class UsernamePasswordInput {
   @Field(() => String)
-  username: string;
+  username: string
 
   @Field(() => String)
-  password: string;
+  password: string
 }
 
 @ObjectType()
 class FieldError {
   @Field()
-  field: string;
+  field: string
 
   @Field()
-  message: string;
+  message: string
 }
 
 @ObjectType()
 class UserResponse {
   @Field(() => [FieldError], { nullable: true })
-  errors?: FieldError[];
+  errors?: FieldError[]
 
   @Field(() => User, { nullable: true })
-  user?: User;
+  user?: User
 }
 
 @Resolver()
 export class UserResolver {
-  @Mutation(() => User)
-  async register(
-    @Arg("options") options: UsernamePasswordInput,
-    @Ctx() { em }: MyContext
-  ) {
-    const { username, password } = options;
-    const hashedPassword = await argon2.hash(password);
-    const user = em.create(User, { username, password: hashedPassword });
+  @Query(() => User, { nullable: true })
+  async me(@Ctx() { req, em }: MyContext) {
+    if (!req.session.userId) {
+      return null
+    }
 
-    await em.persistAndFlush(user);
+    const id = req.session.userId
+    const user = await em.findOne(User, { id })
 
-    return user;
+    return user
   }
 
   @Mutation(() => UserResponse)
-  async login(
-    @Arg("options") options: UsernamePasswordInput,
-    @Ctx() { em }: MyContext
-  ): Promise<UserResponse> {
-    const { username, password } = options;
-    const user = await em.findOne(User, { username });
+  async register(@Arg('options') options: UsernamePasswordInput, @Ctx() { req, em }: MyContext): Promise<UserResponse> {
+    const { username, password } = options
+
+    if (username.length <= 2) {
+      return {
+        errors: [
+          {
+            field: 'username',
+            message: 'length must be greater than 2'
+          }
+        ]
+      }
+    }
+
+    if (username.length <= 3) {
+      return {
+        errors: [
+          {
+            field: 'password',
+            message: 'length must be greater than 3'
+          }
+        ]
+      }
+    }
+
+    const hashedPassword = await argon2.hash(password)
+    const user = em.create(User, { username, password: hashedPassword })
+
+    try {
+      await em.persistAndFlush(user)
+      req.session.userId = user.id
+      req.session.user = user
+    } catch (err) {
+      if (err.code === '23505') {
+        return {
+          errors: [
+            {
+              field: 'username',
+              message: 'username already token'
+            }
+          ]
+        }
+      }
+    }
+
+    return {
+      user
+    }
+  }
+
+  @Mutation(() => UserResponse)
+  async login(@Arg('options') options: UsernamePasswordInput, @Ctx() { em, req }: MyContext): Promise<UserResponse> {
+    const { username, password } = options
+    const user = await em.findOne(User, { username })
 
     if (!user) {
       return {
         errors: [
           {
-            field: "username",
-            message: "could not find a username",
-          },
-        ],
-      };
+            field: 'username',
+            message: 'could not find a username'
+          }
+        ]
+      }
     }
 
-    const valid = await argon2.verify(user.password, password);
+    const valid = await argon2.verify(user.password, password)
 
     if (!valid) {
       return {
         errors: [
           {
-            field: "password",
-            message: "incorrect password",
-          },
-        ],
-      };
+            field: 'password',
+            message: 'incorrect password'
+          }
+        ]
+      }
     }
 
+    req.session.userId = user.id
+    req.session.user = user
+
     return {
-      user,
-    };
+      user
+    }
   }
 }
